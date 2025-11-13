@@ -3,7 +3,7 @@ builder = "nixpacks"
 buildCommand = "npm install"
 
 [deploy]
-startCommand = "node ws-server.js"
+startCommand = "npm run ws-server"
 restartPolicyType = "on_failure"
 
 [env]
