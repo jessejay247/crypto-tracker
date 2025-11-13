@@ -1,4 +1,4 @@
-// ws-server.js - Fix the import paths
+// backend/ws-server.js - FIXED PATHS FOR YOUR STRUCTURE
 const express = require('express');
 const mongoose = require('mongoose');
 const http = require('http');
@@ -16,16 +16,12 @@ const wss = new WebSocket.Server({
   perMessageDeflate: false
 });
 
-// FIXED: Use correct relative paths
-const tickerWebSocketService = require('../backend/src/services/tickerWebSocketService');
-const tickerWebSocketController = require('../backend/src/controllers/tickerWebSocketController');
+// FIXED: Correct paths for your backend/src structure
+const tickerWebSocketService = require('./src/services/tickerWebSocketService');
+const tickerWebSocketController = require('./src/controllers/tickerWebSocketController');
 
 // Initialize WebSocket controller
-if (tickerWebSocketController && tickerWebSocketController.initialize) {
-  tickerWebSocketController.initialize(wss);
-} else {
-  console.log('⚠️  Ticker WebSocket controller not found, continuing without it');
-}
+tickerWebSocketController.initialize(wss);
 
 // Middleware
 app.use(express.json());
@@ -43,45 +39,62 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date(),
     websocket: {
-      connected_clients: wss.clients.size,
-      service_ready: false
+      connected_clients: tickerWebSocketController.clients.size,
+      subscribed_clients: tickerWebSocketController.subscribedClients.size,
+      service_ready: tickerWebSocketService.isReady
     },
     platform: 'Render WebSocket Server'
   });
 });
 
-// Simple ticker endpoint
+// REST endpoints for ticker data
 app.get('/api/tickers', (req, res) => {
   res.json({
-    tickers: {},
-    message: "WebSocket server starting up",
+    tickers: tickerWebSocketService.getAllTickers(),
     timestamp: Date.now()
   });
 });
 
 app.get('/api/tickers/status', (req, res) => {
+  const status = {
+    binance: tickerWebSocketService.connections.has('binance'),
+    bybit: tickerWebSocketService.connections.has('bybit'),
+    okx: tickerWebSocketService.connections.has('okx'),
+    totalSymbols: tickerWebSocketService.tickerData.size,
+    timestamp: Date.now()
+  };
+  res.json(status);
+});
+
+app.get('/api/tickers/symbols', (req, res) => {
+  const symbols = Array.from(tickerWebSocketService.tickerData.keys());
   res.json({
-    status: "initializing",
-    message: "WebSocket server running on Render",
+    symbols: symbols,
+    count: symbols.length,
     timestamp: Date.now()
   });
 });
 
-// Your existing routes (with error handling)
-try {
-  app.use('/api/auth', require('../backend/src/routes/authRoutes'));
-  app.use('/api/wallet', require('../backend/src/routes/walletRoutes'));
-  app.use('/api/transaction', require('../backend/src/routes/transactionRoutes'));
-  app.use('/api/admin', require('../backend/src/routes/adminRoutes'));
-  app.use('/api/gastank', require('../backend/src/routes/gasTankRoutes'));
-  app.use('/api/config', require('../backend/src/routes/configRoutes'));
-  app.use('/api/analytics', require('../backend/src/routes/analyticsRoutes'));
-  app.use('/api/tokens', require('../backend/src/routes/customerTokenRoutes'));
-  app.use('/api/customer', require('../backend/src/routes/customerDashboardRoutes'));
-  console.log('✅ All routes loaded');
-} catch (error) {
-  console.log('⚠️  Some routes failed to load:', error.message);
-}
+// WebSocket info endpoint
+app.get('/api/tickers/websocket-info', (req, res) => {
+  res.json({
+    endpoint: `wss://${req.get('host')}/ws/tickers`,
+    ready: tickerWebSocketService.isReady,
+    supported_exchanges: tickerWebSocketService.supportedExchanges,
+    connected_clients: tickerWebSocketController.clients.size
+  });
+});
+
+// Your existing routes (with correct paths)
+app.use('/api/auth', require('./src/routes/authRoutes'));
+app.use('/api/wallet', require('./src/routes/walletRoutes'));
+app.use('/api/transaction', require('./src/routes/transactionRoutes'));
+app.use('/api/admin', require('./src/routes/adminRoutes'));
+app.use('/api/gastank', require('./src/routes/gasTankRoutes'));
+app.use('/api/config', require('./src/routes/configRoutes'));
+app.use('/api/analytics', require('./src/routes/analyticsRoutes'));
+app.use('/api/tokens', require('./src/routes/customerTokenRoutes'));
+app.use('/api/customer', require('./src/routes/customerDashboardRoutes'));
 
 // Initialize services
 async function initializeServices() {
@@ -93,20 +106,12 @@ async function initializeServices() {
     });
     console.log('✅ MongoDB connected on Render');
     
-    // Initialize ticker service if available
-    if (tickerWebSocketService && tickerWebSocketService.initialize) {
-      console.log('🎯 Initializing ticker service...');
-      await tickerWebSocketService.initialize();
-    }
-    
-    if (tickerWebSocketController && tickerWebSocketController.start) {
-      tickerWebSocketController.start();
-    }
-    
-    console.log('✅ Services initialized!');
+    console.log('🎯 Initializing ticker service...');
+    await tickerWebSocketService.initialize();
+    tickerWebSocketController.start();
+    console.log('✅ Ticker service ready on Render!');
   } catch (error) {
-    console.error('❌ Service initialization failed:', error.message);
-    // Continue running without ticker service
+    console.error('❌ Initialization failed:', error);
   }
 }
 
@@ -123,9 +128,7 @@ server.listen(PORT, '0.0.0.0', () => {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
-  if (tickerWebSocketController && tickerWebSocketController.stop) {
-    tickerWebSocketController.stop();
-  }
+  tickerWebSocketController.stop();
   await mongoose.connection.close();
   server.close(() => {
     console.log('Process terminated');
