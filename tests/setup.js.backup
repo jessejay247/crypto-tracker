@@ -1,0 +1,434 @@
+// backend/tests/setup.js
+const mongoose = require('mongoose');
+const { MongoMemoryServer } = require('mongodb-memory-server');
+
+let mongoServer;
+
+beforeAll(async () => {
+  mongoServer = await MongoMemoryServer.create();
+  const mongoUri = mongoServer.getUri();
+  await mongoose.connect(mongoUri);
+});
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongoServer.stop();
+});
+
+afterEach(async () => {
+  const collections = mongoose.connection.collections;
+  for (const key in collections) {
+    await collections[key].deleteMany();
+  }
+});
+
+// backend/tests/auth.test.js
+const request = require('supertest');
+const app = require('../src/index');
+const User = require('../src/models/User');
+
+describe('Authentication', () => {
+  describe('POST /api/auth/register', () => {
+    it('should register a new user', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          email: 'test@example.com',
+          password: 'Password123',
+          firstName: 'Test',
+          lastName: 'User'
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body).toHaveProperty('message');
+      expect(res.body).toHaveProperty('userId');
+    });
+
+    it('should fail with invalid email', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          email: 'invalid-email',
+          password: 'Password123',
+          firstName: 'Test',
+          lastName: 'User'
+        });
+
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('should fail with short password', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          email: 'test@example.com',
+          password: '123',
+          firstName: 'Test',
+          lastName: 'User'
+        });
+
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('POST /api/auth/login', () => {
+    beforeEach(async () => {
+      await request(app)
+        .post('/api/auth/register')
+        .send({
+          email: 'test@example.com',
+          password: 'Password123',
+          firstName: 'Test',
+          lastName: 'User'
+        });
+
+      // Verify email
+      const user = await User.findOne({ email: 'test@example.com' });
+      user.isEmailVerified = true;
+      await user.save();
+    });
+
+    it('should login with valid credentials', async () => {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'Password123'
+        });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toHaveProperty('token');
+      expect(res.body).toHaveProperty('user');
+    });
+
+    it('should fail with wrong password', async () => {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'WrongPassword'
+        });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+});
+
+// backend/tests/wallet.test.js
+const request = require('supertest');
+const app = require('../src/index');
+const User = require('../src/models/User');
+
+describe('Wallet Operations', () => {
+  let token;
+
+  beforeEach(async () => {
+    // Register and login
+    await request(app)
+      .post('/api/auth/register')
+      .send({
+        email: 'test@example.com',
+        password: 'Password123',
+        firstName: 'Test',
+        lastName: 'User'
+      });
+
+    const user = await User.findOne({ email: 'test@example.com' });
+    user.isEmailVerified = true;
+    await user.save();
+
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({
+        email: 'test@example.com',
+        password: 'Password123'
+      });
+
+    token = loginRes.body.token;
+  });
+
+  describe('POST /api/wallet/create', () => {
+    it('should create an Ethereum wallet', async () => {
+      const res = await request(app)
+        .post('/api/wallet/create')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          network: 'ETH',
+          label: 'Test Wallet'
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body).toHaveProperty('walletId');
+      expect(res.body).toHaveProperty('address');
+      expect(res.body.network).toBe('ETH');
+    });
+
+    it('should create a Bitcoin wallet', async () => {
+      const res = await request(app)
+        .post('/api/wallet/create')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          network: 'BTC',
+          label: 'BTC Wallet'
+        });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.network).toBe('BTC');
+    });
+
+    it('should fail without authentication', async () => {
+      const res = await request(app)
+        .post('/api/wallet/create')
+        .send({
+          network: 'ETH',
+          label: 'Test Wallet'
+        });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('GET /api/wallet/wallets', () => {
+    it('should get user wallets', async () => {
+      // Create a wallet first
+      await request(app)
+        .post('/api/wallet/create')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          network: 'ETH',
+          label: 'Test Wallet'
+        });
+
+      const res = await request(app)
+        .get('/api/wallet/wallets')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toHaveProperty('wallets');
+      expect(Array.isArray(res.body.wallets)).toBe(true);
+      expect(res.body.wallets.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+// backend/tests/commission.test.js
+const CommissionService = require('../src/services/commissionService');
+const SystemConfig = require('../src/models/SystemConfig');
+
+describe('Commission Service', () => {
+  beforeEach(async () => {
+    await SystemConfig.create({
+      commissionRate: 0.5,
+      commissionAddresses: [
+        { network: 'ETH', address: '0x123...', enabled: true }
+      ]
+    });
+  });
+
+  describe('calculateCommission', () => {
+    it('should calculate 0.5% commission correctly', async () => {
+      const result = await CommissionService.calculateCommission(100, 'ETH');
+
+      expect(result.originalAmount).toBe(100);
+      expect(result.commissionAmount).toBe(0.5);
+      expect(result.netAmount).toBe(99.5);
+      expect(result.commissionRate).toBe(0.5);
+    });
+
+    it('should handle different amounts', async () => {
+      const result = await CommissionService.calculateCommission(1000, 'ETH');
+
+      expect(result.commissionAmount).toBe(5);
+      expect(result.netAmount).toBe(995);
+    });
+  });
+
+  describe('getCommissionAddress', () => {
+    it('should return commission address for enabled network', async () => {
+      const address = await CommissionService.getCommissionAddress('ETH');
+      expect(address).toBe('0x123...');
+    });
+
+    it('should throw error for unconfigured network', async () => {
+      await expect(
+        CommissionService.getCommissionAddress('BTC')
+      ).rejects.toThrow();
+    });
+  });
+});
+
+// backend/tests/walletGenerator.test.js
+const WalletGenerator = require('../src/services/walletGenerator');
+
+describe('Wallet Generator', () => {
+  describe('BTC wallet generation', () => {
+    it('should generate valid BTC mainnet wallet', async () => {
+      const wallet = await WalletGenerator.generate('BTC', 'mainnet');
+
+      expect(wallet).toHaveProperty('address');
+      expect(wallet).toHaveProperty('privateKey');
+      expect(wallet.address).toBeTruthy();
+    });
+
+    it('should generate valid BTC testnet wallet', async () => {
+      const wallet = await WalletGenerator.generate('BTC', 'testnet');
+      expect(wallet.address).toBeTruthy();
+    });
+  });
+
+  describe('ETH wallet generation', () => {
+    it('should generate valid ETH wallet', async () => {
+      const wallet = await WalletGenerator.generate('ETH');
+
+      expect(wallet).toHaveProperty('address');
+      expect(wallet).toHaveProperty('privateKey');
+      expect(wallet.address).toMatch(/^0x[a-fA-F0-9]{40}$/);
+    });
+  });
+
+  describe('SOL wallet generation', () => {
+    it('should generate valid SOL wallet', async () => {
+      const wallet = await WalletGenerator.generate('SOL');
+
+      expect(wallet).toHaveProperty('address');
+      expect(wallet).toHaveProperty('privateKey');
+      expect(wallet.address).toBeTruthy();
+    });
+  });
+
+  describe('validateAddress', () => {
+    it('should validate ETH address', () => {
+      const isValid = WalletGenerator.validateAddress(
+        '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb',
+        'ETH'
+      );
+      expect(isValid).toBe(true);
+    });
+
+    it('should reject invalid ETH address', () => {
+      const isValid = WalletGenerator.validateAddress(
+        'invalid_address',
+        'ETH'
+      );
+      expect(isValid).toBe(false);
+    });
+  });
+});
+
+// backend/jest.config.js
+module.exports = {
+  testEnvironment: 'node',
+  coveragePathIgnorePatterns: ['/node_modules/'],
+  setupFilesAfterEnv: ['./tests/setup.js'],
+  testMatch: ['**/__tests__/**/*.js', '**/?(*.)+(spec|test).js'],
+  collectCoverageFrom: [
+    'src/**/*.js',
+    '!src/index.js',
+    '!src/scripts/**'
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 70,
+      functions: 70,
+      lines: 70,
+      statements: 70
+    }
+  }
+};
+
+// backend/package.json additions for testing
+/*
+{
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "mongodb-memory-server": "^9.1.3"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  }
+}
+*/
+
+// TESTING.md - Testing Guide
+/*
+# Testing Guide
+
+## Running Tests
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Run tests with coverage
+npm run test:coverage
+
+# Run specific test file
+npm test -- auth.test.js
+```
+
+## Test Structure
+
+```
+backend/tests/
+├── setup.js              # Test setup and teardown
+├── auth.test.js          # Authentication tests
+├── wallet.test.js        # Wallet operation tests
+├── commission.test.js    # Commission service tests
+├── walletGenerator.test.js # Wallet generation tests
+└── integration/          # Integration tests
+    └── transaction.test.js
+```
+
+## Writing Tests
+
+### Unit Tests
+Test individual functions and services in isolation.
+
+### Integration Tests
+Test complete flows (e.g., create wallet → get balance → send transaction).
+
+### Test Database
+Uses MongoDB Memory Server for isolated testing.
+
+## Coverage Requirements
+
+Maintain at least 70% coverage for:
+- Branches
+- Functions
+- Lines
+- Statements
+
+## Best Practices
+
+1. Use descriptive test names
+2. Test both success and failure cases
+3. Mock external dependencies
+4. Clean up after tests
+5. Use beforeEach/afterEach appropriately
+6. Test edge cases
+
+## Example Test
+
+```javascript
+describe('Feature', () => {
+  describe('Scenario', () => {
+    it('should do something specific', async () => {
+      // Arrange
+      const input = 'test';
+
+      // Act
+      const result = await functionUnderTest(input);
+
+      // Assert
+      expect(result).toBe('expected');
+    });
+  });
+});
+```
+*/

@@ -1,0 +1,14 @@
+{
+  "BTC": {
+    "address": "tb1qs6qu9dmmfqu790z4t68lz48sjcvjpz9eycjfgl",
+    "privateKey": "cRyZY9gv4EvL5eQTZK4Qe3ApM2ngE23d1ujZDu6WqWEyU9W964fa"
+  },
+  "LTC": {
+    "address": "tltc1qvh79n9jqsat5g795ckctmk0e3x5r0mtvnusct2",
+    "privateKey": "cVWKqmWuq4hQZVTZhaM7gJMG3cbWSH2anZGQjijLW1etSwXEgNzF"
+  },
+  "DOGE": {
+    "address": "nhFg6KnSsN9fbCdFBHcXErS4GW28sJUtUr",
+    "privateKey": "chbKq9hCtB1nqmxFAg4Q2wWGpSQ4THsDbQFGwWuw7h6f3pB4oENp"
+  }
+}
