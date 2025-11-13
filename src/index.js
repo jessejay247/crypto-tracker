@@ -1,27 +1,12 @@
+// index.js - Vercel REST API Only
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const http = require('http');
-const WebSocket = require('ws');
 require('dotenv').config();
 
 const app = express();
-const server = http.createServer(app);
-
-// Create WebSocket server for tickers
-const wss = new WebSocket.Server({ 
-  server,
-  path: '/ws/tickers' // Specific path for ticker WebSocket
-});
-
-// Import ticker services
-const tickerWebSocketService = require('./services/tickerWebSocketService');
-const tickerWebSocketController = require('./controllers/tickerWebSocketController');
-
-// Initialize WebSocket controller
-tickerWebSocketController.initialize(wss);
 
 app.use(helmet());
 app.use(cors({
@@ -64,12 +49,13 @@ app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/tokens', require('./routes/customerTokenRoutes'));
 app.use('/api/customer', require('./routes/customerDashboardRoutes'));
 
-// Ticker WebSocket info endpoint
+// Ticker endpoints pointing to Railway WebSocket server
 app.get('/api/tickers/websocket-info', (req, res) => {
+  const wsServerUrl = process.env.RAILWAY_WS_URL || 'wss://your-app.up.railway.app';
   res.json({
-    endpoint: `ws://${req.get('host')}/ws/tickers`,
-    ready: tickerWebSocketService.isReady,
-    supported_exchanges: tickerWebSocketService.supportedExchanges,
+    endpoint: `${wsServerUrl}/ws/tickers`,
+    ready: true,
+    supported_exchanges: ['binance', 'bybit', 'okx'],
     example_messages: [
       { type: 'subscribe_tickers', description: 'Subscribe to live ticker updates' },
       { type: 'unsubscribe_tickers', description: 'Unsubscribe from updates' },
@@ -79,55 +65,42 @@ app.get('/api/tickers/websocket-info', (req, res) => {
   });
 });
 
-// Get current tickers via REST (fallback)
+// Get current tickers - will return empty or cached data
 app.get('/api/tickers', (req, res) => {
   res.json({
-    tickers: tickerWebSocketService.getAllTickers(),
+    tickers: {},
+    message: "WebSocket server runs on Railway - use /api/tickers/websocket-info for connection details",
     timestamp: Date.now()
   });
 });
-
 
 app.get('/api/tickers/symbols', (req, res) => {
-  const symbols = Array.from(tickerWebSocketService.tickerData.keys());
   res.json({
-    symbols: symbols,
-    count: symbols.length,
+    symbols: [],
+    message: "Connect to Railway WebSocket server for live symbols",
     timestamp: Date.now()
   });
 });
 
-
-// In your index.js - Add connection status endpoint
 app.get('/api/tickers/status', (req, res) => {
-  const status = {
-    binance: tickerWebSocketService.connections.has('binance'),
-    bybit: tickerWebSocketService.connections.has('bybit'),
-    okx: tickerWebSocketService.connections.has('okx'),
-    totalSymbols: tickerWebSocketService.tickerData.size,
-    binanceSymbols: Array.from(tickerWebSocketService.tickerData.values())
-      .filter(t => t.exchange === 'binance').length,
-    bybitSymbols: Array.from(tickerWebSocketService.tickerData.values())
-      .filter(t => t.exchange === 'bybit').length,
-    okxSymbols: Array.from(tickerWebSocketService.tickerData.values())
-      .filter(t => t.exchange === 'okx').length,
-  };
-  res.json(status);
+  res.json({
+    message: "WebSocket server runs on separate Railway instance",
+    railway_url: process.env.RAILWAY_WS_URL || "Not configured",
+    timestamp: Date.now()
+  });
 });
 
-
+// Health check (MongoDB only)
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date(),
-    websocket: {
-      connected_clients: tickerWebSocketController.clients.size,
-      subscribed_clients: tickerWebSocketController.subscribedClients.size,
-      service_ready: tickerWebSocketService.isReady
-    }
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    platform: 'Vercel REST API'
   });
 });
 
+// Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({
@@ -140,34 +113,14 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// Initialize ticker WebSocket service in background
-async function initializeTickerService() {
-  try {
-    await tickerWebSocketService.initialize();
-    tickerWebSocketController.start();
-    console.log('🎯 Ticker service ready - Live market data flowing!');
-  } catch (error) {
-    console.error('❌ Ticker service initialization failed:', error.message);
-  }
-}
-
-// Start server
+// Start server (for local development)
 if (require.main === module) {
-  mongoose.connect(process.env.MONGODB_URI)
-    .then(() => {
-      const PORT = process.env.PORT || 3000;
-      server.listen(PORT, () => {
-        console.log(`🚀 Server on port ${PORT}`);
-        console.log(`📡 Ticker WebSocket: ws://localhost:${PORT}/ws/tickers`);
-        console.log(`ℹ️  WebSocket info: http://localhost:${PORT}/api/tickers/websocket-info`);
-        
-        // Initialize ticker service after server starts
-        setTimeout(() => {
-          initializeTickerService();
-        }, 1000);
-      });
-    });
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Vercel REST API on port ${PORT}`);
+    console.log(`📊 Health: http://localhost:${PORT}/health`);
+  });
 }
 
-// module.exports = { app, server };
+// Export for Vercel
 module.exports = app;
